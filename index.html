@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vegetation Cover</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<link href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" rel="stylesheet">
+<style>
+  :root{
+    --glass: rgba(255,255,255,.55);
+    --glass-strong: rgba(255,255,255,.72);
+    --stroke: rgba(255,255,255,.65);
+    --hair: rgba(0,0,0,.08);
+    --text: #1c1c1e;
+    --sub: #6b6b70;
+    --accent: #30b85a;
+    --accent-soft: rgba(48,184,90,.16);
+    --btn: rgba(255,255,255,.6);
+    --btn-hover: rgba(255,255,255,.9);
+    --shadow: 0 10px 40px rgba(0,0,0,.18), 0 1px 0 rgba(255,255,255,.6) inset;
+    --danger: #e5484d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --glass: rgba(28,28,32,.52);
+      --glass-strong: rgba(28,28,32,.7);
+      --stroke: rgba(255,255,255,.14);
+      --hair: rgba(255,255,255,.08);
+      --text: #f2f2f7;
+      --sub: #a1a1aa;
+      --accent: #4cd97b;
+      --accent-soft: rgba(76,217,123,.18);
+      --btn: rgba(255,255,255,.08);
+      --btn-hover: rgba(255,255,255,.16);
+      --shadow: 0 10px 40px rgba(0,0,0,.5), 0 1px 0 rgba(255,255,255,.08) inset;
+    }
+  }
+  :root[data-theme="dark"]{
+    --glass: rgba(28,28,32,.52);
+    --glass-strong: rgba(28,28,32,.7);
+    --stroke: rgba(255,255,255,.14);
+    --hair: rgba(255,255,255,.08);
+    --text: #f2f2f7;
+    --sub: #a1a1aa;
+    --accent: #4cd97b;
+    --accent-soft: rgba(76,217,123,.18);
+    --btn: rgba(255,255,255,.08);
+    --btn-hover: rgba(255,255,255,.16);
+    --shadow: 0 10px 40px rgba(0,0,0,.5), 0 1px 0 rgba(255,255,255,.08) inset;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#0b0b0d;
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #map{position:absolute;inset:0}
+
+  /* ---------- single glass panel ---------- */
+  #panel{
+    position:absolute;top:16px;left:16px;z-index:5;width:300px;
+    max-height:calc(100% - 32px);overflow:auto;
+    padding:16px;border-radius:22px;color:var(--text);
+    background:var(--glass);border:1px solid var(--stroke);box-shadow:var(--shadow);
+    backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);
+  }
+  .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .title{font-size:15px;font-weight:650;letter-spacing:-.01em}
+  .eyebrow{font-size:11px;color:var(--sub);margin-top:1px}
+
+  .seg{display:flex;gap:6px}
+  .btn{
+    appearance:none;border:1px solid var(--stroke);background:var(--btn);color:var(--text);
+    height:34px;min-width:34px;padding:0 12px;border-radius:12px;cursor:pointer;
+    font:inherit;font-size:13px;font-weight:550;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    transition:background .15s, transform .05s;
+  }
+  .btn:hover{background:var(--btn-hover)}
+  .btn:active{transform:scale(.97)}
+  .btn.icon{padding:0;width:34px}
+  .btn.primary{background:var(--accent);border-color:transparent;color:#fff;flex:1}
+  .btn.primary.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+  .btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+  .card{margin-top:12px;padding:14px;border-radius:16px;background:var(--glass-strong);border:1px solid var(--hair)}
+  #pct{font-size:34px;font-weight:700;letter-spacing:-.02em;color:var(--accent);line-height:1.1}
+  #pct.muted{color:var(--sub);font-weight:600;font-size:22px}
+  .pct-label{font-size:12px;color:var(--sub);margin-top:2px}
+  .bar{height:6px;border-radius:99px;background:var(--hair);margin:12px 0 10px;overflow:hidden}
+  .bar>i{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .4s ease}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .stat .k{font-size:11px;color:var(--sub)}
+  .stat .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+  #status{font-size:12px;color:var(--sub);margin-top:8px;min-height:1em}
+  #status.err{color:var(--danger)}
+
+  .section{margin-top:14px}
+  .section h3{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px}
+  .legend{display:grid;gap:7px;font-size:13px}
+  .legend div{display:flex;align-items:center;gap:9px}
+  .sw{width:16px;height:16px;border-radius:5px;flex:none}
+  .sw.poly{background:var(--accent-soft);border:2px solid var(--accent)}
+  .sw.cov{background:rgba(255,255,255,.12);border:1.5px dashed rgba(255,255,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.25)}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:13px}
+  .toggle{position:relative;width:38px;height:22px;flex:none}
+  .toggle input{opacity:0;width:0;height:0}
+  .toggle span{position:absolute;inset:0;border-radius:99px;background:var(--hair);border:1px solid var(--stroke);transition:.2s;cursor:pointer}
+  .toggle span::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:.2s}
+  .toggle input:checked+span{background:var(--accent)}
+  .toggle input:checked+span::after{transform:translateX(16px)}
+
+  .foot{margin-top:14px;padding-top:10px;border-top:1px solid var(--hair);font-size:11px;color:var(--sub)}
+  .foot a{color:var(--sub)}
+
+  /* MapLibre attribution to match */
+  .maplibregl-ctrl-attrib{background:var(--glass)!important;color:var(--sub);border-radius:10px 0 0 0;
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  .maplibregl-ctrl-attrib a{color:var(--sub)!important}
+
+  @media (max-width:600px){
+    #panel{top:auto;bottom:12px;left:12px;right:12px;width:auto;max-height:55%}
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel">
+  <div class="head">
+    <div>
+      <div class="title">Vegetation Cover</div>
+      <div class="eyebrow">2026 4-band imagery · NDVI</div>
+    </div>
+    <button class="btn icon" id="theme" title="Toggle theme" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+
+  <div class="seg">
+    <button class="btn primary" id="drawBtn">
+      <svg viewBox="0 0 24 24"><path d="M12 3l9 6-3.5 11h-11L3 9z"/></svg><span>Draw area</span>
+    </button>
+    <button class="btn icon" id="clearBtn" title="Clear" aria-label="Clear">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+    </button>
+  </div>
+
+  <div class="card">
+    <div id="pct" class="muted">—</div>
+    <div class="pct-label" id="pctLabel">Draw a polygon to measure</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="stats">
+      <div class="stat"><div class="k">Vegetation</div><div class="v" id="vegA">—</div></div>
+      <div class="stat"><div class="k">Total area</div><div class="v" id="totA">—</div></div>
+    </div>
+    <div id="status">Loading…</div>
+  </div>
+
+  <div class="section">
+    <h3>Map</h3>
+    <div class="seg">
+      <button class="btn icon" id="zin" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="btn icon" id="zout" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button class="btn icon" id="fit" title="Zoom to coverage" aria-label="Zoom to coverage"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <button class="btn icon" id="north" title="Reset north" aria-label="Reset north"><svg viewBox="0 0 24 24"><path d="M12 3l5 18-5-4-5 4z"/></svg></button>
+    </div>
+    <div class="row"><span>Place labels</span><label class="toggle"><input type="checkbox" id="labels"><span></span></label></div>
+    <div class="row"><span>Imagery coverage</span><label class="toggle"><input type="checkbox" id="cov" checked><span></span></label></div>
+  </div>
+
+  <div class="section">
+    <h3>Legend</h3>
+    <div class="legend">
+      <div><span class="sw poly"></span>Measured area</div>
+      <div><span class="sw cov"></span>Imagery coverage</div>
+    </div>
+  </div>
+
+  <div class="foot">Vegetation = NDVI ≥ <span id="thr">0.20</span> at time of flight. Shadows read as non-vegetation.</div>
+</aside>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js"></script>
+<script src="https://unpkg.com/proj4@2.12.1/dist/proj4.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script>
+const CONFIG = { dataDir: "data/veg/", maxTiles: 40 };
+
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ---------- theme ---------- */
+try { const t = localStorage.getItem("vc-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+$("theme").onclick = () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  const next = dark ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("vc-theme", next); } catch {}
+  restyleDraw();
+};
+
+/* ---------- map: Esri World Imagery ---------- */
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
+const map = new maplibregl.Map({
+  container: "map",
+  attributionControl: false,
+  style: {
+    version: 8,
+    sources: {
+      imagery: { type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: [ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" },
+      labels: { type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: [ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"] }
+    },
+    layers: [
+      { id: "imagery", type: "raster", source: "imagery" },
+      { id: "labels", type: "raster", source: "labels", layout: { visibility: "none" } }
+    ]
+  },
+  center: [-83.63, 32.84], zoom: 11
+});
+map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+
+$("zin").onclick  = () => map.zoomIn();
+$("zout").onclick = () => map.zoomOut();
+$("north").onclick = () => map.resetNorthPitch();
+$("labels").onchange = e => map.setLayoutProperty("labels", "visibility", e.target.checked ? "visible" : "none");
+$("cov").onchange = e => ["cov-fill", "cov-line"].forEach(l => map.getLayer(l) && map.setLayoutProperty(l, "visibility", e.target.checked ? "visible" : "none"));
+
+/* ---------- draw (no default controls; styled to theme) ---------- */
+MapboxDraw.constants.classes.CONTROL_BASE   = "maplibregl-ctrl";
+MapboxDraw.constants.classes.CONTROL_PREFIX = "maplibregl-ctrl-";
+MapboxDraw.constants.classes.CONTROL_GROUP  = "maplibregl-ctrl-group";
+
+function drawStyles(a) {
+  return [
+    { id: "gl-draw-polygon-fill", type: "fill", filter: ["all", ["==", "$type", "Polygon"]],
+      paint: { "fill-color": a, "fill-opacity": 0.18 } },
+    { id: "gl-draw-polygon-stroke", type: "line", filter: ["all", ["==", "$type", "Polygon"]],
+      layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": a, "line-width": 2.5 } },
+    { id: "gl-draw-line", type: "line", filter: ["all", ["==", "$type", "LineString"]],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": a, "line-width": 2.5, "line-dasharray": [0.5, 2] } },
+    { id: "gl-draw-vertex-halo", type: "circle",
+      filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"]], paint: { "circle-radius": 7, "circle-color": "#fff" } },
+    { id: "gl-draw-vertex", type: "circle",
+      filter: ["all", ["==", "meta", "vertex"], ["==", "$type", "Point"]], paint: { "circle-radius": 4.5, "circle-color": a } },
+    { id: "gl-draw-midpoint", type: "circle",
+      filter: ["all", ["==", "meta", "midpoint"], ["==", "$type", "Point"]], paint: { "circle-radius": 3.5, "circle-color": a, "circle-opacity": .8 } }
+  ];
+}
+let draw = new MapboxDraw({ displayControlsDefault: false, styles: drawStyles(css("--accent")) });
+map.addControl(draw);
+
+function restyleDraw() {
+  const a = css("--accent");
+  drawStyles(a).forEach(s => {
+    if (s.id === "gl-draw-vertex-halo") return;
+    const prop = Object.keys(s.paint).find(k => k.endsWith("-color"));
+    ["cold", "hot"].forEach(sfx => map.getLayer(`${s.id}.${sfx}`) && map.setPaintProperty(`${s.id}.${sfx}`, prop, a));
+  });
+}
+
+const drawBtn = $("drawBtn");
+function setDrawing(on) {
+  drawBtn.classList.toggle("on", on);
+  drawBtn.querySelector("span").textContent = on ? "Click points · double-click to finish" : "Draw area";
+}
+drawBtn.onclick = () => {
+  if (draw.getMode() === "draw_polygon") { draw.changeMode("simple_select"); setDrawing(false); return; }
+  draw.deleteAll(); reset(); draw.changeMode("draw_polygon"); setDrawing(true);
+};
+$("clearBtn").onclick = () => { draw.deleteAll(); draw.changeMode("simple_select"); setDrawing(false); reset(); };
+map.on("draw.modechange", e => setDrawing(e.mode === "draw_polygon"));
+
+/* ---------- results UI ---------- */
+const fmt = n => Math.round(n).toLocaleString() + " m²";
+function setStatus(t, err) { $("status").textContent = t || ""; $("status").className = err ? "err" : ""; }
+function reset() {
+  $("pct").className = "muted"; $("pct").textContent = "—";
+  $("pctLabel").textContent = "Draw a polygon to measure";
+  $("bar").style.width = "0"; $("vegA").textContent = "—"; $("totA").textContent = "—"; setStatus("");
+}
+
+/* ---------- data ---------- */
+let IDX, toNative, cache = new Map(), bounds;
+
+fetch(CONFIG.dataDir + "index.json").then(r => r.json()).then(idx => {
+  IDX = idx;
+  proj4.defs("NATIVE", idx.proj4);
+  toNative = proj4("EPSG:4326", "NATIVE");
+  $("thr").textContent = (idx.threshold ?? 0.2).toFixed(2);
+  const [x0, y0, x1, y1] = idx.extentLL;
+  bounds = [[x0, y0], [x1, y1]];
+  map.fitBounds(bounds, { padding: 40, duration: 0 });
+
+  const feats = idx.tiles.map(t => {
+    const [a, b, c, d] = t.b;
+    const ring = [[a, b], [c, b], [c, d], [a, d], [a, b]].map(p => toNative.inverse(p));
+    return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
+  });
+  const addCov = () => {
+    map.addSource("cov", { type: "geojson", data: { type: "FeatureCollection", features: feats } });
+    const first = map.getStyle().layers.find(l => l.id.startsWith("gl-draw"))?.id;
+    map.addLayer({ id: "cov-fill", type: "fill", source: "cov", paint: { "fill-color": "#ffffff", "fill-opacity": 0.06 } }, first);
+    map.addLayer({ id: "cov-line", type: "line", source: "cov",
+      paint: { "line-color": "#ffffff", "line-opacity": 0.35, "line-width": 0.6 } }, first);
+  };
+  map.loaded() ? addCov() : map.once("load", addCov);
+  setStatus("");
+}).catch(e => { setStatus("Could not load index.json", true); console.error(e); });
+
+$("fit").onclick = () => bounds && map.fitBounds(bounds, { padding: 40 });
+
+function getTile(f) {
+  if (!cache.has(f)) cache.set(f, fetch(CONFIG.dataDir + f).then(r => r.arrayBuffer())
+    .then(GeoTIFF.fromArrayBuffer).then(t => t.getImage()));
+  return cache.get(f);
+}
+
+function inside(x, y, rings) {
+  let c = false;
+  for (const ring of rings)
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+  return c;
+}
+
+async function analyze(feature) {
+  if (!IDX) return;
+  const rings = feature.geometry.coordinates.map(r => r.map(p => toNative.forward(p)));
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const [x, y] of rings[0]) { bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y); }
+
+  const hits = IDX.tiles.filter(t => t.b[0] < bx1 && t.b[2] > bx0 && t.b[1] < by1 && t.b[3] > by0);
+  if (!hits.length) { reset(); setStatus("Outside imagery coverage.", true); return; }
+  if (hits.length > CONFIG.maxTiles) { reset(); setStatus(`Too large (${hits.length} tiles) — draw a smaller area.`, true); return; }
+
+  $("pct").className = "muted"; $("pct").textContent = "…";
+  setStatus(`Reading ${hits.length} tile${hits.length > 1 ? "s" : ""}…`);
+  let veg = 0, valid = 0;
+
+  for (const t of hits) {
+    const img = await getTile(t.f);
+    const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
+    const W = img.getWidth(), H = img.getHeight();
+    const c0 = Math.max(0, Math.floor((bx0 - ox) / rx)), c1 = Math.min(W, Math.ceil((bx1 - ox) / rx));
+    const r0 = Math.max(0, Math.floor((by1 - oy) / ry)), r1 = Math.min(H, Math.ceil((by0 - oy) / ry));
+    if (c1 <= c0 || r1 <= r0) continue;
+    const [vb, ab] = await img.readRasters({ window: [c0, r0, c1, r1], interleave: false });
+    const w = c1 - c0;
+    for (let r = r0; r < r1; r++) {
+      const Y = oy + (r + 0.5) * ry;
+      for (let c = c0; c < c1; c++) {
+        if (!inside(ox + (c + 0.5) * rx, Y, rings)) continue;
+        const k = (r - r0) * w + (c - c0);
+        veg += vb[k]; valid += ab[k];
+      }
+    }
+  }
+
+  if (!valid) { reset(); setStatus("No valid imagery under polygon.", true); return; }
+  const A = IDX.pixelArea_m2, p = 100 * veg / valid;
+  $("pct").className = ""; $("pct").textContent = p.toFixed(1) + "%";
+  $("pctLabel").textContent = "vegetation";
+  $("bar").style.width = p + "%";
+  $("vegA").textContent = fmt(veg * A);
+  $("totA").textContent = fmt(valid * A);
+  setStatus("");
+}
+
+map.on("draw.create", e => { setDrawing(false); analyze(e.features[0]); });
+map.on("draw.update", e => analyze(e.features[0]));
+map.on("draw.delete", reset);
+</script>
+</body>
+</html>
