@@ -91,6 +91,16 @@
   .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .stat .k{font-size:11px;color:var(--sub)}
   .stat .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+  .lc{display:grid;gap:9px;margin-top:12px}
+  .lc-row{display:grid;grid-template-columns:12px 1fr auto;column-gap:8px;align-items:center;font-size:13px}
+  .lc-row .sw{width:12px;height:12px;border-radius:4px}
+  .lc-row .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lc-row .p{font-weight:650;font-variant-numeric:tabular-nums}
+  .lc-row .a{grid-column:2/4;font-size:11px;color:var(--sub);font-variant-numeric:tabular-nums}
+  .lc-row .mbar{grid-column:2/4;height:5px;border-radius:99px;background:var(--hair);overflow:hidden;margin-top:3px}
+  .lc-row .mbar>i{display:block;height:100%;width:0;border-radius:99px;transition:width .4s ease}
+  .total{display:flex;justify-content:space-between;margin-top:12px;padding-top:10px;border-top:1px solid var(--hair);font-size:13px}
+  .total b{font-variant-numeric:tabular-nums}
   #status{font-size:12px;color:var(--sub);margin-top:8px;min-height:1em}
   #status.err{color:var(--danger)}
 
@@ -128,8 +138,8 @@
 <aside id="panel">
   <div class="head">
     <div>
-      <div class="title">Vegetation Cover</div>
-      <div class="eyebrow">2026 4-band imagery · NDVI</div>
+      <div class="title">Land Cover</div>
+      <div class="eyebrow">2026 4-band imagery · classified</div>
     </div>
     <button class="btn icon" id="theme" title="Toggle theme" aria-label="Toggle theme">
       <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -148,11 +158,8 @@
   <div class="card">
     <div id="pct" class="muted">—</div>
     <div class="pct-label" id="pctLabel">Draw a polygon to measure</div>
-    <div class="bar"><i id="bar"></i></div>
-    <div class="stats">
-      <div class="stat"><div class="k">Vegetation</div><div class="v" id="vegA">—</div></div>
-      <div class="stat"><div class="k">Total area</div><div class="v" id="totA">—</div></div>
-    </div>
+    <div class="lc" id="lc"></div>
+    <div class="total"><span>Total area</span><b id="totA">—</b></div>
     <div id="status">Loading…</div>
   </div>
 
@@ -170,13 +177,13 @@
 
   <div class="section">
     <h3>Legend</h3>
-    <div class="legend">
+    <div class="legend" id="legend">
       <div><span class="sw poly"></span>Measured area</div>
       <div><span class="sw cov"></span>Imagery coverage</div>
     </div>
   </div>
 
-  <div class="foot">Vegetation = NDVI ≥ <span id="thr">0.20</span> at time of flight. Shadows read as non-vegetation.</div>
+  <div class="foot">Machine-classified from 2026 imagery at time of flight. Expect some error at class edges and in shadow.</div>
 </aside>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
@@ -184,7 +191,7 @@
 <script src="https://unpkg.com/proj4@2.12.1/dist/proj4.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <script>
-const CONFIG = { dataDir: "data/veg/", maxTiles: 40 };
+const CONFIG = { dataDir: "data/lc/", maxTiles: 40 };
 
 const $ = id => document.getElementById(id);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -280,9 +287,24 @@ map.on("draw.modechange", e => setDrawing(e.mode === "draw_polygon"));
 const fmt = n => Math.round(n).toLocaleString() + " m²";
 function setStatus(t, err) { $("status").textContent = t || ""; $("status").className = err ? "err" : ""; }
 function reset() {
-  $("pct").className = "muted"; $("pct").textContent = "—";
+  $("pct").className = "muted"; $("pct").textContent = "—"; $("pct").style.color = "";
   $("pctLabel").textContent = "Draw a polygon to measure";
-  $("bar").style.width = "0"; $("vegA").textContent = "—"; $("totA").textContent = "—"; setStatus("");
+  $("totA").textContent = "—"; setStatus("");
+  if (IDX) renderRows(null);
+}
+
+function renderRows(counts) {
+  const total = counts ? counts.reduce((a, b) => a + b, 0) : 0;
+  $("lc").innerHTML = IDX.classes.map((c, i) => {
+    const p = total ? 100 * counts[i] / total : 0;
+    return `<div class="lc-row">
+      <span class="sw" style="background:${c.color}"></span>
+      <span class="n">${c.name}</span>
+      <span class="p">${counts ? p.toFixed(1) + "%" : "—"}</span>
+      <div class="mbar"><i style="width:${p}%;background:${c.color}"></i></div>
+      ${counts ? `<span class="a">${fmt(counts[i] * IDX.pixelArea_m2)}</span>` : ""}
+    </div>`;
+  }).join("");
 }
 
 /* ---------- data ---------- */
@@ -292,7 +314,9 @@ fetch(CONFIG.dataDir + "index.json").then(r => r.json()).then(idx => {
   IDX = idx;
   proj4.defs("NATIVE", idx.proj4);
   toNative = proj4("EPSG:4326", "NATIVE");
-  $("thr").textContent = (idx.threshold ?? 0.2).toFixed(2);
+  renderRows(null);
+  $("legend").insertAdjacentHTML("beforeend", idx.classes.map(c =>
+    `<div><span class="sw" style="background:${c.color}"></span>${c.name}</div>`).join(""));
   const [x0, y0, x1, y1] = idx.extentLL;
   bounds = [[x0, y0], [x1, y1]];
   map.fitBounds(bounds, { padding: 40, duration: 0 });
@@ -343,7 +367,7 @@ async function analyze(feature) {
 
   $("pct").className = "muted"; $("pct").textContent = "…";
   setStatus(`Reading ${hits.length} tile${hits.length > 1 ? "s" : ""}…`);
-  let veg = 0, valid = 0;
+  const nC = IDX.classes.length, counts = new Array(nC).fill(0);
 
   for (const t of hits) {
     const img = await getTile(t.f);
@@ -352,25 +376,27 @@ async function analyze(feature) {
     const c0 = Math.max(0, Math.floor((bx0 - ox) / rx)), c1 = Math.min(W, Math.ceil((bx1 - ox) / rx));
     const r0 = Math.max(0, Math.floor((by1 - oy) / ry)), r1 = Math.min(H, Math.ceil((by0 - oy) / ry));
     if (c1 <= c0 || r1 <= r0) continue;
-    const [vb, ab] = await img.readRasters({ window: [c0, r0, c1, r1], interleave: false });
+    const bands = await img.readRasters({ window: [c0, r0, c1, r1], interleave: false });
     const w = c1 - c0;
     for (let r = r0; r < r1; r++) {
       const Y = oy + (r + 0.5) * ry;
       for (let c = c0; c < c1; c++) {
         if (!inside(ox + (c + 0.5) * rx, Y, rings)) continue;
         const k = (r - r0) * w + (c - c0);
-        veg += vb[k]; valid += ab[k];
+        for (let i = 0; i < nC; i++) counts[i] += bands[i][k];
       }
     }
   }
 
-  if (!valid) { reset(); setStatus("No valid imagery under polygon.", true); return; }
-  const A = IDX.pixelArea_m2, p = 100 * veg / valid;
-  $("pct").className = ""; $("pct").textContent = p.toFixed(1) + "%";
-  $("pctLabel").textContent = "vegetation";
-  $("bar").style.width = p + "%";
-  $("vegA").textContent = fmt(veg * A);
-  $("totA").textContent = fmt(valid * A);
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (!total) { reset(); setStatus("No valid imagery under polygon.", true); return; }
+  const top = counts.indexOf(Math.max(...counts));
+  $("pct").className = "";
+  $("pct").style.color = IDX.classes[top].color;
+  $("pct").textContent = (100 * counts[top] / total).toFixed(1) + "%";
+  $("pctLabel").textContent = IDX.classes[top].name + " (largest)";
+  renderRows(counts);
+  $("totA").textContent = fmt(total * IDX.pixelArea_m2);
   setStatus("");
 }
 
