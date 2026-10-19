@@ -118,6 +118,7 @@
   .toggle span::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:.2s}
   .toggle input:checked+span{background:var(--accent)}
   .toggle input:checked+span::after{transform:translateX(16px)}
+  input[type=range]{width:120px;accent-color:var(--accent)}
 
   .foot{margin-top:14px;padding-top:10px;border-top:1px solid var(--hair);font-size:11px;color:var(--sub)}
   .foot a{color:var(--sub)}
@@ -171,8 +172,8 @@
       <button class="btn icon" id="fit" title="Zoom to coverage" aria-label="Zoom to coverage"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       <button class="btn icon" id="north" title="Reset north" aria-label="Reset north"><svg viewBox="0 0 24 24"><path d="M12 3l5 18-5-4-5 4z"/></svg></button>
     </div>
-    <div class="row"><span>Place labels</span><label class="toggle"><input type="checkbox" id="labels"><span></span></label></div>
     <div class="row"><span>Imagery coverage</span><label class="toggle"><input type="checkbox" id="cov" checked><span></span></label></div>
+    <div class="row"><span>Class overlay</span><input type="range" id="ovOp" min="0" max="100" value="75" aria-label="Class overlay opacity"></div>
   </div>
 
   <div class="section">
@@ -191,7 +192,12 @@
 <script src="https://unpkg.com/proj4@2.12.1/dist/proj4.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <script>
-const CONFIG = { dataDir: "data/lc/", maxTiles: 40 };
+const CONFIG = {
+  dataDir: "data/lc/",        // 1.2 m class-count tiles (the numbers)
+  fullDir: "data/lcfull/",    // 0.3 m class tiles (the colour overlay)
+  maxTiles: 30,
+  maxRenderPx: 3_000_000      // per tile; larger windows are drawn at reduced resolution
+};
 
 const $ = id => document.getElementById(id);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -218,13 +224,10 @@ const map = new maplibregl.Map({
     sources: {
       imagery: { type: "raster", tileSize: 256, maxzoom: 19,
         tiles: [ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}"],
-        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" },
-      labels: { type: "raster", tileSize: 256, maxzoom: 19,
-        tiles: [ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"] }
+        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community" }
     },
     layers: [
-      { id: "imagery", type: "raster", source: "imagery" },
-      { id: "labels", type: "raster", source: "labels", layout: { visibility: "none" } }
+      { id: "imagery", type: "raster", source: "imagery" }
     ]
   },
   center: [-83.63, 32.84], zoom: 11
@@ -234,7 +237,6 @@ map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-rig
 $("zin").onclick  = () => map.zoomIn();
 $("zout").onclick = () => map.zoomOut();
 $("north").onclick = () => map.resetNorthPitch();
-$("labels").onchange = e => map.setLayoutProperty("labels", "visibility", e.target.checked ? "visible" : "none");
 $("cov").onchange = e => ["cov-fill", "cov-line"].forEach(l => map.getLayer(l) && map.setLayoutProperty(l, "visibility", e.target.checked ? "visible" : "none"));
 
 /* ---------- draw (no default controls; styled to theme) ---------- */
@@ -284,12 +286,18 @@ $("clearBtn").onclick = () => { draw.deleteAll(); draw.changeMode("simple_select
 map.on("draw.modechange", e => setDrawing(e.mode === "draw_polygon"));
 
 /* ---------- results UI ---------- */
-const fmt = n => Math.round(n).toLocaleString() + " m²";
+const FT2_PER_M2 = 10.7639104, FT2_PER_AC = 43560;
+const fmt = m2 => {
+  const ft2 = m2 * FT2_PER_M2;
+  const s = Math.round(ft2).toLocaleString() + " ft²";
+  return ft2 >= FT2_PER_AC ? `${(ft2 / FT2_PER_AC).toFixed(2)} ac · ${s}` : s;
+};
 function setStatus(t, err) { $("status").textContent = t || ""; $("status").className = err ? "err" : ""; }
 function reset() {
   $("pct").className = "muted"; $("pct").textContent = "—"; $("pct").style.color = "";
   $("pctLabel").textContent = "Draw a polygon to measure";
   $("totA").textContent = "—"; setStatus("");
+  ovSeq++; clearOverlay();
   if (IDX) renderRows(null);
 }
 
@@ -339,20 +347,95 @@ fetch(CONFIG.dataDir + "index.json").then(r => r.json()).then(idx => {
 
 $("fit").onclick = () => bounds && map.fitBounds(bounds, { padding: 40 });
 
-function getTile(f) {
-  if (!cache.has(f)) cache.set(f, fetch(CONFIG.dataDir + f).then(r => r.arrayBuffer())
-    .then(GeoTIFF.fromArrayBuffer).then(t => t.getImage()));
-  return cache.get(f);
+function getTile(dir, f) {
+  const key = dir + f;
+  if (!cache.has(key)) cache.set(key, fetch(dir + f).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.arrayBuffer();
+  }).then(GeoTIFF.fromArrayBuffer).then(t => t.getImage()));
+  return cache.get(key);
 }
 
-function inside(x, y, rings) {
-  let c = false;
+// Scanline: x-intervals of a row (even-odd rule, holes included) -> [[xa,xb], ...]
+function spans(y, rings) {
+  const xs = [];
   for (const ring of rings)
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
       const [xi, yi] = ring[i], [xj, yj] = ring[j];
-      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+      if ((yi > y) !== (yj > y)) xs.push((xj - xi) * (y - yi) / (yj - yi) + xi);
     }
-  return c;
+  xs.sort((a, b) => a - b);
+  const out = [];
+  for (let k = 0; k + 1 < xs.length; k += 2) out.push([xs[k], xs[k + 1]]);
+  return out;
+}
+
+// Columns [ca, cb) whose pixel centres fall inside a span
+function colRange(xa, xb, ox, rx, c0, c1) {
+  const ca = Math.max(c0, Math.ceil((xa - ox) / rx - 0.5));
+  const cb = Math.min(c1, Math.floor((xb - ox) / rx - 0.5) + 1);
+  return [ca, cb];
+}
+
+/* ---------- class overlay (clipped to polygon) ---------- */
+let ovIds = [], ovSeq = 0;
+const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+function clearOverlay() {
+  for (const id of ovIds) {
+    if (map.getLayer(id)) map.removeLayer(id);
+    if (map.getSource(id)) map.removeSource(id);
+  }
+  ovIds = [];
+}
+$("ovOp").oninput = e => ovIds.forEach(id => map.getLayer(id) &&
+  map.setPaintProperty(id, "raster-opacity", e.target.value / 100));
+
+async function drawOverlay(hits, rings, box, seq) {
+  const pal = {};
+  IDX.classes.forEach(c => pal[c.code] = hexRGB(c.color));
+  const before = map.getStyle().layers.find(l => l.id.startsWith("gl-draw"))?.id;
+  const [bx0, by0, bx1, by1] = box;
+  for (const t of hits) {
+    let img;
+    try { img = await getTile(CONFIG.fullDir, t.f); } catch { continue; }
+    if (seq !== ovSeq) return;                         // a newer polygon replaced this one
+    const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
+    const W = img.getWidth(), H = img.getHeight();
+    const c0 = Math.max(0, Math.floor((bx0 - ox) / rx)), c1 = Math.min(W, Math.ceil((bx1 - ox) / rx));
+    const r0 = Math.max(0, Math.floor((by1 - oy) / ry)), r1 = Math.min(H, Math.ceil((by0 - oy) / ry));
+    if (c1 <= c0 || r1 <= r0) continue;
+    const step = Math.max(1, Math.ceil(Math.sqrt((c1 - c0) * (r1 - r0) / CONFIG.maxRenderPx)));
+    const w = c1 - c0, cw = Math.ceil(w / step), ch = Math.ceil((r1 - r0) / step);
+    const [data] = await img.readRasters({ window: [c0, r0, c1, r1], interleave: false });
+
+    const cv = document.createElement("canvas");
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext("2d"), im = ctx.createImageData(cw, ch), px = im.data;
+    for (let j = 0; j < ch; j++) {
+      const r = r0 + j * step, Y = oy + (r + 0.5) * ry;
+      for (const [xa, xb] of spans(Y, rings)) {
+        let [ca, cb] = colRange(xa, xb, ox, rx, c0, c1);
+        ca = c0 + Math.ceil((ca - c0) / step) * step;
+        for (let c = ca; c < cb; c += step) {
+          const v = data[(r - r0) * w + (c - c0)], col = pal[v];
+          if (!col) continue;
+          const o = (j * cw + (c - c0) / step) * 4;
+          px[o] = col[0]; px[o + 1] = col[1]; px[o + 2] = col[2]; px[o + 3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(im, 0, 0);
+
+    const X0 = ox + c0 * rx, X1 = ox + (c0 + cw * step) * rx;
+    const Y0 = oy + r0 * ry, Y1 = oy + (r0 + ch * step) * ry;
+    const coords = [[X0, Y0], [X1, Y0], [X1, Y1], [X0, Y1]].map(p => toNative.inverse(p));
+    const id = `ov-${seq}-${ovIds.length}`;
+    map.addSource(id, { type: "image", url: cv.toDataURL(), coordinates: coords });
+    map.addLayer({ id, type: "raster", source: id,
+      paint: { "raster-opacity": $("ovOp").value / 100, "raster-resampling": "nearest", "raster-fade-duration": 0 } }, before);
+    ovIds.push(id);
+  }
 }
 
 async function analyze(feature) {
@@ -368,9 +451,11 @@ async function analyze(feature) {
   $("pct").className = "muted"; $("pct").textContent = "…";
   setStatus(`Reading ${hits.length} tile${hits.length > 1 ? "s" : ""}…`);
   const nC = IDX.classes.length, counts = new Array(nC).fill(0);
+  const seq = ++ovSeq;
+  clearOverlay();
 
   for (const t of hits) {
-    const img = await getTile(t.f);
+    const img = await getTile(CONFIG.dataDir, t.f);
     const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
     const W = img.getWidth(), H = img.getHeight();
     const c0 = Math.max(0, Math.floor((bx0 - ox) / rx)), c1 = Math.min(W, Math.ceil((bx1 - ox) / rx));
@@ -380,13 +465,16 @@ async function analyze(feature) {
     const w = c1 - c0;
     for (let r = r0; r < r1; r++) {
       const Y = oy + (r + 0.5) * ry;
-      for (let c = c0; c < c1; c++) {
-        if (!inside(ox + (c + 0.5) * rx, Y, rings)) continue;
-        const k = (r - r0) * w + (c - c0);
-        for (let i = 0; i < nC; i++) counts[i] += bands[i][k];
+      for (const [xa, xb] of spans(Y, rings)) {
+        const [ca, cb] = colRange(xa, xb, ox, rx, c0, c1);
+        for (let c = ca; c < cb; c++) {
+          const k = (r - r0) * w + (c - c0);
+          for (let i = 0; i < nC; i++) counts[i] += bands[i][k];
+        }
       }
     }
   }
+  if (seq !== ovSeq) return;
 
   const total = counts.reduce((a, b) => a + b, 0);
   if (!total) { reset(); setStatus("No valid imagery under polygon.", true); return; }
@@ -397,7 +485,9 @@ async function analyze(feature) {
   $("pctLabel").textContent = IDX.classes[top].name + " (largest)";
   renderRows(counts);
   $("totA").textContent = fmt(total * IDX.pixelArea_m2);
-  setStatus("");
+  setStatus("Drawing class overlay…");
+  await drawOverlay(hits, rings, [bx0, by0, bx1, by1], seq);
+  if (seq === ovSeq) setStatus("");
 }
 
 map.on("draw.create", e => { setDrawing(false); analyze(e.features[0]); });
